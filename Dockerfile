@@ -8,13 +8,18 @@ RUN curl -O https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-ha
     tar -xzf spark-3.5.0-bin-hadoop3.tgz -C /opt/ && \
     rm spark-3.5.0-bin-hadoop3.tgz
 
-# Прописуємо змінні оточення (тепер ми точно знаємо, де Spark)
+# Прописуємо змінні оточення
 ENV SPARK_HOME=/opt/spark-3.5.0-bin-hadoop3
 ENV PATH="$SPARK_HOME/bin:$PATH"
 ENV PYTHONPATH="$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip:$PYTHONPATH"
 
-# Встановлюємо лише необхідні Python-ліби
-RUN pip install --no-cache-dir kafka-python requests sseclient-py
+# Встановлюємо необхідні Python-ліби, включаючи pytest та pyspark для тестів
+RUN pip install --no-cache-dir \
+    kafka-python \
+    requests \
+    sseclient-py \
+    pytest \
+    pyspark==3.5.0
 
 WORKDIR /app
 COPY . .

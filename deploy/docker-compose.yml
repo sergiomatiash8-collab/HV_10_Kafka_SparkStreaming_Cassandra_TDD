@@ -23,8 +23,6 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    # Generator все ще може використовувати python, якщо він на старому образі, 
-    # але для надійності вказуємо python3, якщо Dockerfile спільний
     command: python3 src/generator/generator.py
     environment:
       - KAFKA_BROKER=kafka:29092
@@ -35,9 +33,28 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    # Використовуємо python3, який точно є в образі apache/spark:3.5.0
     command: python3 src/spark/processor.py
+    restart: always
     environment:
       - KAFKA_BROKER=kafka:29092
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
+      cassandra:
+        condition: service_healthy
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: deploy-cassandra-1
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=TestCluster
+      - CASSANDRA_DC=dc1
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
