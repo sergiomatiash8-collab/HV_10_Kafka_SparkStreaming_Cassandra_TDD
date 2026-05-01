@@ -14,5 +14,30 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  generator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # Generator все ще може використовувати python, якщо він на старому образі, 
+    # але для надійності вказуємо python3, якщо Dockerfile спільний
+    command: python3 src/generator/generator.py
+    environment:
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      - kafka
+
+  spark-processor:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # Використовуємо python3, який точно є в образі apache/spark:3.5.0
+    command: python3 src/spark/processor.py
+    environment:
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      - kafka
