@@ -1,34 +1,30 @@
-import os
 import pytest
+import os
 from pyspark.sql import SparkSession
 
-def test_spark_kafka_packages_load():
-    # Вказуємо шлях до папки hadoop, яку ти створив у проєкті
-    # Склеюємо поточну директорію з папкою hadoop
-    project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    hadoop_path = os.path.join(project_root, "hadoop")
-    
-    # Встановлюємо змінні оточення для Spark
-    os.environ["HADOOP_HOME"] = hadoop_path
-    os.environ["hadoop.home.dir"] = hadoop_path
-    
-    # Додаємо bin до PATH
-    os.environ["PATH"] += os.pathsep + os.path.join(hadoop_path, "bin")
-
-    spark = SparkSession.builder \
-        .appName("TestKafkaConnection") \
-        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
-        .config("spark.driver.host", "localhost") \
-        .master("local[*]") \
-        .getOrCreate()
-    
+def test_spark_kafka_packages_load(spark):
+    """
+    Перевіряє, що Spark успішно завантажив пакети для роботи з Kafka.
+    Використовує глобальну сесію 'spark' з conftest.py, щоб уникнути 
+    конфліктів JVM на Windows.
+    """
     try:
+        # Ми не створюємо нову сесію тут, а використовуємо ту, 
+        # що вже має завантажені пакети Kafka та Cassandra.
+        
         df = spark.readStream \
             .format("kafka") \
             .option("kafka.bootstrap.servers", "localhost:9092") \
             .option("subscribe", "input") \
             .load()
         
+        # Якщо ми дійшли до цієї точки без AnalysisException, 
+        # значить пакети підтягнулися успішно.
         assert df.isStreaming
-    finally:
-        spark.stop()
+        
+    except Exception as e:
+        # Виводимо зрозумілу помилку, якщо щось пішло не так
+        pytest.fail(f"Spark не зміг ініціалізувати Kafka-стрім через глобальну сесію: {e}")
+
+# Функція spark.stop() не потрібна тут, оскільки вона 
+# виконується у фікстурі conftest.py після завершення всіх тестів.

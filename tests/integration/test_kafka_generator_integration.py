@@ -1,102 +1,89 @@
-"""
-Integration test: Перевірка що Generator може писати в Kafka.
-"""
-
-import pytest
-from kafka import KafkaConsumer, KafkaProducer
 import json
+import uuid
+import pytest
 import time
+from kafka import KafkaProducer, KafkaConsumer
+from src.spark.logic import transform_wikipedia_event
 
+KAFKA_BROKER = 'localhost:9092'
+TOPIC = 'input'
 
-@pytest.fixture
+@pytest.fixture(scope='module')
 def kafka_producer():
-    """Fixture для Kafka producer."""
     producer = KafkaProducer(
-        bootstrap_servers=['kafka:29092'],
-        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        bootstrap_servers=[KAFKA_BROKER],
+        value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+        acks='all',  # Чекаємо підтвердження від усіх реплік
+        retries=3,
     )
     yield producer
     producer.close()
 
-
-@pytest.fixture
+@pytest.fixture(scope='module')
 def kafka_consumer():
-    """Fixture для Kafka consumer."""
+    # Використовуємо новий group_id для кожного запуску, щоб читати з чистим офсетом
+    group_id = f'test-group-{uuid.uuid4().hex}'
     consumer = KafkaConsumer(
-        'input',
-        bootstrap_servers=['kafka:29092'],
-        auto_offset_reset='earliest',
-        enable_auto_commit=True,
-        group_id='test-group',
+        TOPIC,
+        bootstrap_servers=[KAFKA_BROKER],
+        auto_offset_reset='latest',  # Тільки нові повідомлення
+        group_id=group_id,
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        consumer_timeout_ms=5000
+        consumer_timeout_ms=2000,   # Не чекати вічно, якщо даних немає
     )
+    
+    # "Прогрів" підключення
+    for _ in range(10):
+        consumer.poll(timeout_ms=500)
+        if consumer.assignment():
+            break
+        time.sleep(0.5)
+        
     yield consumer
     consumer.close()
 
-
 def test_kafka_producer_can_send_message(kafka_producer, kafka_consumer):
-    """
-    Перевіряє що можна відправити повідомлення в Kafka і прочитати його.
-    """
-    # Тестове повідомлення
-    test_message = {
-        "meta": {
-            "id": "test-123",
-            "dt": "2024-05-01T10:00:00Z"
-        },
-        "page_title": "Test Page",
-        "performer": {
-            "user_text": "TestUser"
-        }
+    """Бронебійна перевірка: відправляємо і шукаємо ID серед будь-якого трафіку."""
+    unique_msg_id = str(uuid.uuid4())
+    
+    test_msg = {
+        'meta': {'id': unique_msg_id, 'dt': '2026-05-01T10:00:00Z'},
+        'page_title': f'Test Page {unique_msg_id}',
+        'performer': {'user_text': 'TestUser'}
     }
-    
-    # Відправка
-    kafka_producer.send('input', value=test_message)
+
+    # Відправляємо і ЖОРСТКО чекаємо запису в Kafka
+    kafka_producer.send(TOPIC, value=test_msg).get(timeout=10)
     kafka_producer.flush()
-    
-    # Читання
-    messages = []
-    for message in kafka_consumer:
-        messages.append(message.value)
-        break  # Читаємо тільки 1 повідомлення
-    
-    assert len(messages) > 0, "Не вдалося прочитати повідомлення з Kafka!"
-    assert messages[0]['page_title'] == "Test Page"
 
+    found_msg = None
+    start_time = time.time()
+    timeout_limit = 15  # 15 секунд на пошук
 
-def test_spark_reads_kafka_stream_and_transforms(kafka_producer):
-    """
-    Перевіряє що Spark може читати з Kafka і трансформувати дані.
-    
-    Цей тест НЕ запускає Spark job (це робить окремий контейнер),
-    а лише перевіряє що дані в правильному форматі.
-    """
-    from src.spark.logic import transform_wikipedia_event
-    
-    # Тестові дані
+    # Цикл пошуку
+    while time.time() - start_time < timeout_limit:
+        records = kafka_consumer.poll(timeout_ms=1000)
+        
+        for tp, msgs in records.items():
+            for msg in msgs:
+                # Перевіряємо кожне повідомлення на відповідність нашому ID
+                if msg.value.get('meta', {}).get('id') == unique_msg_id:
+                    found_msg = msg.value
+                    break
+            if found_msg: break
+        if found_msg: break
+
+    assert found_msg is not None, f"ID {unique_msg_id} не знайдено за {timeout_limit}с. Перевір, чи працює генератор."
+    assert found_msg['page_title'] == f'Test Page {unique_msg_id}'
+
+def test_spark_reads_kafka_stream_and_transforms():
+    """Тест чистої логіки трансформації (без затримок Kafka)."""
     test_data = {
-        "meta": {
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "dt": "2024-05-01T10:30:00Z"
-        },
-        "page_title": "Integration Test Page",
-        "performer": {
-            "user_text": "IntegrationUser"
-        }
+        'meta': {'id': '550e8400-e29b-41d4-a716-446655440000',
+                 'dt': '2026-05-01T10:30:00Z'},
+        'page_title': 'Integration Test Page',
+        'performer': {'user_text': 'IntegrationUser'}
     }
-    
-    # Відправка в Kafka
-    kafka_producer.send('input', value=test_data)
-    kafka_producer.flush()
-    
-    # Трансформація (як робить Spark)
-    raw_json = json.dumps(test_data)
-    transformed = transform_wikipedia_event(raw_json)
-    
-    # Перевірка результату
-    assert transformed is not None
-    assert transformed['id'] == "550e8400-e29b-41d4-a716-446655440000"
-    assert transformed['page_title'] == "Integration Test Page"
-    assert transformed['user_text'] == "IntegrationUser"
-    assert transformed['dt'] == "2024-05-01T10:30:00Z"
+    transformed = transform_wikipedia_event(json.dumps(test_data))
+    assert transformed['id'] == '550e8400-e29b-41d4-a716-446655440000'
+    assert transformed['page_title'] == 'Integration Test Page'

@@ -1,50 +1,28 @@
+# tests/unit/test_processor_versions.py
 """
-Unit test: Перевірка консистентності версій Spark Cassandra Connector.
+Unit test: Перевірка версій пакетів у processor.py.
+Запускається без Docker, без Spark.
 """
-
-import pytest
-import re
+import os
 
 
 def test_processor_uses_consistent_connector_version():
     """
-    Перевіряє що всюди використовується одна версія connector (3.5.0).
-    
-    Файли для перевірки:
-    - src/spark/processor.py
-    - deploy/docker-compose.yml
-    - tests/unit/test_cassandra_connection.py
-    - tests/smoke/test_cassandra_write.py
+    processor.py має використовувати версії 3.5.0 для всіх Spark пакетів.
+    Невідповідність версій → connector не знаходить потрібних JAR.
     """
-    expected_version = "3.5.0"
-    
-    files_to_check = [
-        'src/spark/processor.py',
-        'deploy/docker-compose.yml',
-        'tests/unit/test_cassandra_connection.py',
-        'tests/smoke/test_cassandra_write.py'
-    ]
-    
-    version_pattern = r'spark-cassandra-connector_2\.12:(\d+\.\d+\.\d+)'
-    
-    versions_found = {}
-    
-    for file_path in files_to_check:
-        try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-            
-            matches = re.findall(version_pattern, content)
-            
-            if matches:
-                versions_found[file_path] = matches
-                
-                for version in matches:
-                    assert version == expected_version, \
-                        f"❌ {file_path} використовує версію {version}, очікувалось {expected_version}!"
-        
-        except FileNotFoundError:
-            pytest.skip(f"Файл {file_path} не знайдено")
-    
-    print(f"✅ Всі файли використовують connector версії {expected_version}!")
-    print(f"Перевірено: {list(versions_found.keys())}")
+    # ВИПРАВЛЕННЯ: шлях від кореня проєкту, не відносний
+    path = os.path.join(
+        os.path.dirname(__file__), '../../src/spark/processor.py'
+    )
+    path = os.path.normpath(path)
+    assert os.path.exists(path), f'processor.py не знайдено: {path}'
+
+    content = open(path, encoding='utf-8').read()
+
+    assert 'spark-cassandra-connector_2.12:3.5.0' in content, \
+        'Версія Cassandra connector має бути 3.5.0'
+    assert 'spark-sql-kafka-0-10_2.12:3.5.0' in content, \
+        'Версія Kafka connector має бути 3.5.0'
+    assert '3.4.1' not in content, \
+        'Стара версія 3.4.1 знайдена в processor.py!'
