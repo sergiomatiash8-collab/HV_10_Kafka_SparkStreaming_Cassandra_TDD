@@ -5,14 +5,14 @@ import time
 def test_kafka_has_data():
     """Перевірка, чи є в топіку хоча б одне повідомлення"""
     
-    # Використовуємо внутрішній порт 29092 для зв'язку між контейнерами
+    # Використовуємо порт 9092 для доступу ззовні контейнера
     consumer = KafkaConsumer(
         'input',
-        bootstrap_servers=['kafka:29092'],
+        bootstrap_servers=['127.0.0.1:9092'],
         auto_offset_reset='earliest',
         enable_auto_commit=False,
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-        consumer_timeout_ms=10000  # Чекаємо до 10 секунд
+        consumer_timeout_ms=10000  # Чекаємо 10 секунд
     )
     
     print("\n[TEST] Searching for messages in 'input'...")

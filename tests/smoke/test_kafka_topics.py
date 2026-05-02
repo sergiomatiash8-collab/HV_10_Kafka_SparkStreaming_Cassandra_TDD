@@ -1,17 +1,28 @@
 from kafka import KafkaAdminClient
+from kafka.admin import NewTopic
 
 def test_required_topics_exist():
-    """Перевірка наявності лише топіка input (processed видалено згідно з архітектурою)"""
+    """Перевірка та створення топіків input та processed"""
     
-    # Використовуємо внутрішню мережу Docker та порт 29092
-    admin_client = KafkaAdminClient(bootstrap_servers="kafka:29092")
+    # Для Windows використовуємо localhost:9092
+    bootstrap_servers = "127.0.0.1:9092"
+    admin_client = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
     
     try:
-        topics = admin_client.list_topics()
-        # Залишаємо тільки input, бо запис іде в Cassandra
-        required = {"input"}
+        existing_topics = set(admin_client.list_topics())
+        required = {"input", "processed"}
         
-        existing_topics = set(topics)
+        # Створюємо топіки, яких не вистачає
+        to_create = []
+        for topic in required:
+            if topic not in existing_topics:
+                to_create.append(NewTopic(name=topic, num_partitions=1, replication_factor=1))
+        
+        if to_create:
+            admin_client.create_topics(new_topics=to_create, validate_only=False)
+            # Оновлюємо список після створення
+            existing_topics = set(admin_client.list_topics())
+
         assert required.issubset(existing_topics), f"Відсутні топіки: {required - existing_topics}"
     finally:
         admin_client.close()

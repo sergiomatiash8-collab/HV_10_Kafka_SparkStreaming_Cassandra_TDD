@@ -1,6 +1,5 @@
 """
 Smoke test: Перевірка існування keyspace та таблиці в Cassandra.
-Цей тест ПОВИНЕН падати спочатку (RED), поки ми не створимо init.cql.
 """
 
 import pytest
@@ -8,18 +7,25 @@ from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 import time
 
+# Конфігурація підключення
+CASSANDRA_HOSTS = ['127.0.0.1']  # Виправлено для роботи зовні Docker
+CASSANDRA_PORT = 9042
+# Якщо в Docker-compose не вказано пароль, залиш порожніми або видали auth_provider
+CASSANDRA_USER = 'cassandra'
+CASSANDRA_PASS = 'cassandra'
+
 def test_cassandra_keyspace_exists():
     """
     RED тест: Перевіряє існування keyspace 'wiki_namespace'.
-    Очікується помилка, поки не створимо init.cql.
     """
+    auth_provider = PlainTextAuthProvider(username=CASSANDRA_USER, password=CASSANDRA_PASS)
     max_retries = 10
+    
     for attempt in range(max_retries):
         try:
-            cluster = Cluster(['cassandra'], port=9042)
+            cluster = Cluster(CASSANDRA_HOSTS, port=CASSANDRA_PORT, auth_provider=auth_provider)
             session = cluster.connect()
             
-            # Перевірка існування keyspace
             result = session.execute(
                 "SELECT keyspace_name FROM system_schema.keyspaces WHERE keyspace_name='wiki_namespace'"
             )
@@ -28,7 +34,7 @@ def test_cassandra_keyspace_exists():
             cluster.shutdown()
             
             assert 'wiki_namespace' in keyspaces, "Keyspace 'wiki_namespace' не знайдено!"
-            return  # Тест пройшов
+            return 
             
         except Exception as e:
             if attempt < max_retries - 1:
@@ -41,11 +47,11 @@ def test_cassandra_table_exists():
     """
     RED тест: Перевіряє існування таблиці 'edits'.
     """
+    auth_provider = PlainTextAuthProvider(username=CASSANDRA_USER, password=CASSANDRA_PASS)
     try:
-        cluster = Cluster(['cassandra'], port=9042)
+        cluster = Cluster(CASSANDRA_HOSTS, port=CASSANDRA_PORT, auth_provider=auth_provider)
         session = cluster.connect('wiki_namespace')
         
-        # Перевірка існування таблиці
         result = session.execute(
             "SELECT table_name FROM system_schema.tables "
             "WHERE keyspace_name='wiki_namespace' AND table_name='edits'"
@@ -61,13 +67,13 @@ def test_cassandra_table_exists():
 
 def test_cassandra_table_structure():
     """
-    RED тест: Перевіряє правильність структури таблиці.
+    RED тест: Перевіряє структуру таблиці.
     """
+    auth_provider = PlainTextAuthProvider(username=CASSANDRA_USER, password=CASSANDRA_PASS)
     try:
-        cluster = Cluster(['cassandra'], port=9042)
+        cluster = Cluster(CASSANDRA_HOSTS, port=CASSANDRA_PORT, auth_provider=auth_provider)
         session = cluster.connect('wiki_namespace')
         
-        # Отримуємо опис таблиці
         result = session.execute(
             "SELECT column_name, type FROM system_schema.columns "
             "WHERE keyspace_name='wiki_namespace' AND table_name='edits'"
@@ -76,7 +82,6 @@ def test_cassandra_table_structure():
         columns = {row.column_name: row.type for row in result}
         cluster.shutdown()
         
-        # Перевіряємо наявність обов'язкових колонок
         required_columns = {
             'id': 'uuid',
             'page_title': 'text',
