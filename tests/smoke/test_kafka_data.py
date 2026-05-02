@@ -1,18 +1,30 @@
 from kafka import KafkaConsumer
 import json
+import time
 
 def test_kafka_has_data():
     """Перевірка, чи є в топіку хоча б одне повідомлення"""
+    
+    # Використовуємо внутрішній порт 29092 для зв'язку між контейнерами
     consumer = KafkaConsumer(
         'input',
-        bootstrap_servers=['localhost:9092'],
+        bootstrap_servers=['kafka:29092'],
         auto_offset_reset='earliest',
         enable_auto_commit=False,
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-        consumer_timeout_ms=5000  # Чекаємо 5 секунд
+        consumer_timeout_ms=10000  # Чекаємо до 10 секунд
     )
     
+    print("\n[TEST] Searching for messages in 'input'...")
+    
+    # Спробуємо отримати повідомлення
     msg = next(consumer, None)
-    assert msg is not None, "Топік 'input' порожній!"
-    assert 'page_title' in msg.value, "У повідомленні немає ключа page_title"
+    
+    if msg:
+        print(f"[TEST] Success! Found message with title: {msg.value.get('page_title')}")
+    
+    # Перевірки
+    assert msg is not None, "Topic 'input' is empty or unreachable!"
+    assert 'page_title' in msg.value, "Field 'page_title' missing in message!"
+    
     consumer.close()

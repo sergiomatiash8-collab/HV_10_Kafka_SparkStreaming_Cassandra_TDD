@@ -28,6 +28,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    volumes:
+      - ..:/app
     command: python3 src/generator/generator.py
     restart: always
     environment:
@@ -40,11 +42,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    # ПРИМУСОВЕ ЗАВАНТАЖЕННЯ ПАКЕТІВ ЧЕРЕЗ SPARK-SUBMIT
-    command: >
-      spark-submit 
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1,com.datastax.spark:spark-cassandra-connector_2.12:3.4.1
-      /app/src/spark/processor.py
+    volumes:
+      - ..:/app
+    command: tail -f /dev/null
     restart: always
     environment:
       - KAFKA_BROKER=kafka:29092
@@ -59,6 +59,8 @@ services:
     container_name: deploy-cassandra-1
     ports:
       - "9042:9042"
+    volumes:
+      - ./init.cql:/opt/init.cql
     environment:
       - CASSANDRA_CLUSTER_NAME=TestCluster
       - CASSANDRA_DC=dc1
@@ -69,3 +71,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./init.cql:/opt/init.cql
+    command: /bin/bash -c "cqlsh cassandra -f /opt/init.cql"
