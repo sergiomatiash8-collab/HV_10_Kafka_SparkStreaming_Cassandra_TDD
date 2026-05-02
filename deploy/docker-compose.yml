@@ -1,12 +1,16 @@
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - spark-network
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
     ports:
       - "9092:9092"
     depends_on:
@@ -19,17 +23,54 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - spark-network
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=WikiCluster
+      - CASSANDRA_DC=dc1
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+      - ../cassandra/init.cql:/init.cql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - spark-network
+
+  # ✅ НОВИЙ СЕРВІС: Ініціалізація Cassandra Schema
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ../cassandra/init.cql:/init.cql:ro
+      - ../cassandra/init.sh:/init.sh:ro
+    command: /bin/bash /init.sh
+    networks:
+      - spark-network
 
   generator:
     build:
       context: ..
       dockerfile: Dockerfile
-    volumes:
-      - ..:/app
+    container_name: generator
     command: python3 src/generator/generator.py
     restart: always
     environment:
@@ -37,46 +78,34 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    networks:
+      - spark-network
 
   spark-processor:
     build:
       context: ..
       dockerfile: Dockerfile
-    volumes:
-      - ..:/app
-    command: tail -f /dev/null
+    container_name: spark-processor
+    command: >
+      spark-submit 
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,com.datastax.spark:spark-cassandra-connector_2.12:3.5.0
+      --conf spark.cassandra.connection.host=cassandra
+      --conf spark.cassandra.connection.port=9042
+      /app/src/spark/processor.py
     restart: always
     environment:
       - KAFKA_BROKER=kafka:29092
     depends_on:
       kafka:
         condition: service_healthy
-      cassandra:
-        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+    networks:
+      - spark-network
 
-  cassandra:
-    image: cassandra:4.1
-    container_name: deploy-cassandra-1
-    ports:
-      - "9042:9042"
-    volumes:
-      - ./init.cql:/opt/init.cql
-    environment:
-      - CASSANDRA_CLUSTER_NAME=TestCluster
-      - CASSANDRA_DC=dc1
-      - MAX_HEAP_SIZE=512M
-      - HEAP_NEWSIZE=100M
-    healthcheck:
-      test: ["CMD-SHELL", "nodetool status"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+volumes:
+  cassandra_data:
 
-  cassandra-init:
-    image: cassandra:4.1
-    depends_on:
-      cassandra:
-        condition: service_healthy
-    volumes:
-      - ./init.cql:/opt/init.cql
-    command: /bin/bash -c "cqlsh cassandra -f /opt/init.cql"
+networks:
+  spark-network:
+    driver: bridge

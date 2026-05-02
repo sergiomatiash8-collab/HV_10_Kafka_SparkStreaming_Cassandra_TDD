@@ -1,0 +1,16 @@
+# Kafka
+kafka-python==2.0.2
+
+# HTTP та SSE
+requests==2.31.0
+sseclient-py==1.8.0
+
+# Spark
+pyspark==3.5.0
+
+# Cassandra Driver (для тестів)
+cassandra-driver==3.29.0
+
+# Testing
+pytest==7.4.3
+pytest-timeout==2.2.0

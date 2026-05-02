@@ -1,28 +1,45 @@
 FROM python:3.11-slim
 
-# Встановлюємо Java та curl
-RUN apt-get update && apt-get install -y default-jre curl && apt-get clean
+# ============================================
+# Java та Spark
+# ============================================
 
-# Завантажуємо та розпаковуємо Spark вручну в /opt
+# Встановлюємо Java
+RUN apt-get update && \
+    apt-get install -y default-jre curl procps && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Завантажуємо Spark
 RUN curl -O https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-hadoop3.tgz && \
     tar -xzf spark-3.5.0-bin-hadoop3.tgz -C /opt/ && \
     rm spark-3.5.0-bin-hadoop3.tgz
 
-# Прописуємо змінні оточення
+# Змінні оточення для Spark
 ENV SPARK_HOME=/opt/spark-3.5.0-bin-hadoop3
-ENV PATH="$SPARK_HOME/bin:$PATH"
+ENV PATH="$SPARK_HOME/bin:$SPARK_HOME/sbin:$PATH"
 ENV PYTHONPATH="$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip:$PYTHONPATH"
 
-# Встановлюємо необхідні Python-ліби, включаючи pytest та pyspark для тестів
-RUN pip install --no-cache-dir \
-    kafka-python \
-    requests \
-    sseclient-py \
-    pytest \
-    pyspark==3.5.0
+# ============================================
+# Python Dependencies
+# ============================================
+
+COPY requirements.txt /tmp/requirements.txt
+
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ============================================
+# Application Code
+# ============================================
 
 WORKDIR /app
 COPY . .
 
-# Запускаємо через python3
+# Створюємо директорію для checkpoints
+RUN mkdir -p /tmp/spark_checkpoints && chmod 777 /tmp/spark_checkpoints
+
+# ============================================
+# Default Command
+# ============================================
+
 CMD ["python3", "src/spark/processor.py"]
