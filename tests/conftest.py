@@ -1,37 +1,53 @@
-# tests/conftest.py  ← створити цей файл у корені папки tests/
 import os
 import sys
+import shutil
+import pytest
 from pathlib import Path
 
+# Шлях до кореня проєкту
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
 def pytest_configure(config):
-    """
-    Встановлюємо HADOOP_HOME до старту будь-якого тесту.
-    Це єдине місце — не треба дублювати в кожному тест-файлі.
-    
-    Spark на Windows вимагає winutils.exe в %HADOOP_HOME%/bin/.
-    Папка hadoop/ вже є в проєкті — просто вказуємо на неї.
-    """
-    # Шлях до кореня проєкту (піднімаємось з tests/ на один рівень вгору)
-    project_root = Path(__file__).parent.parent.resolve()
-    hadoop_home = project_root / "hadoop"
-    
-    # Перевіряємо що winutils.exe реально існує — інакше помилка буде та сама
+    """Глобальне налаштування оточення перед усіма тестами."""
+    hadoop_home = PROJECT_ROOT / "hadoop"
     winutils = hadoop_home / "bin" / "winutils.exe"
-    if not winutils.exists():
-        raise FileNotFoundError(
-            f"winutils.exe не знайдено: {winutils}\n"
-            f"Скачай з: https://github.com/cdarlint/winutils/tree/master/hadoop-3.3.5/bin"
-        )
     
-    # Встановлюємо обидві змінні — Spark перевіряє обидві
+    if not winutils.exists():
+        raise FileNotFoundError(f"winutils.exe не знайдено за шляхом: {winutils}")
+    
     os.environ["HADOOP_HOME"] = str(hadoop_home)
     os.environ["hadoop.home.dir"] = str(hadoop_home)
     
-    # Додаємо bin до PATH щоб Java міг знайти winutils.exe напряму
     bin_path = str(hadoop_home / "bin")
     if bin_path not in os.environ.get("PATH", ""):
         os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
     
-    # Додаємо корінь проєкту до sys.path щоб працювали імпорти src.*
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+
+@pytest.fixture(scope="session", autouse=True)
+def spark_cleanup_manager():
+    """
+    Автоматична фікстура, яка очищує тимчасові папки Spark
+    ДО та ПІСЛЯ завершення всієї сесії тестів.
+    """
+    # Папки, які ми хочемо тримати чистими
+    temp_folders = [
+        PROJECT_ROOT / "spark_workspace",
+        PROJECT_ROOT / "s_tmp",
+        PROJECT_ROOT / "hadoop_env" # Якщо використовувалася раніше
+    ]
+
+    # 1. Очистка перед початком
+    for folder in temp_folders:
+        if folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)
+
+    yield # Тут виконуються всі тести проекту
+
+    # 2. Очистка після завершення (даємо 1-2 секунди на закриття JVM)
+    import time
+    time.sleep(1)
+    for folder in temp_folders:
+        if folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)

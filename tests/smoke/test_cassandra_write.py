@@ -1,91 +1,101 @@
 import pytest
-from pyspark.sql import SparkSession
-from pyspark.sql import Row
-from pyspark.sql.functions import col
-from datetime import datetime
-import time
+import os
+import shutil
 import uuid
+import time
+from datetime import datetime
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.functions import col
+from cassandra.cluster import Cluster
 
-def wait_for_cassandra(max_retries=10):
-    """Чекає поки Cassandra стане доступною за локальною адресою."""
-    from cassandra.cluster import Cluster
-    
-    # Для Windows/Local використовуємо 127.0.0.1
+# Налаштування шляхів для Windows
+TMP_DIR = "C:/spark_tmp/cassandra_test"
+
+def setup_cassandra_schema():
+    """Створює Keyspace та Table перед тестом."""
     host = '127.0.0.1'
-    for attempt in range(max_retries):
-        try:
-            cluster = Cluster([host], port=9042)
-            session = cluster.connect()
-            cluster.shutdown()
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"Cassandra на {host} не готова, чекаємо... ({attempt + 1}/{max_retries})")
-                time.sleep(5)
-            else:
-                return False
-    return False
+    try:
+        cluster = Cluster([host], port=9042)
+        session = cluster.connect()
+        session.execute("""
+            CREATE KEYSPACE IF NOT EXISTS wiki_namespace 
+            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+        """)
+        session.execute("""
+            CREATE TABLE IF NOT EXISTS wiki_namespace.edits (
+                id uuid PRIMARY KEY,
+                page_title text,
+                user_text text,
+                dt timestamp
+            );
+        """)
+        cluster.shutdown()
+        return True
+    except Exception as e:
+        print(f"❌ Помилка схеми: {e}")
+        return False
 
-def test_cassandra_reachable():
-    assert wait_for_cassandra(), "Cassandra недоступна на localhost:9042!"
+@pytest.fixture(scope="module")
+def spark():
+    if os.path.exists(TMP_DIR):
+        shutil.rmtree(TMP_DIR, ignore_errors=True)
+    os.makedirs(TMP_DIR, exist_ok=True)
 
-def test_write_to_cassandra():
-    assert wait_for_cassandra()
+    s = (SparkSession.builder
+        .appName("CassandraSmokeTest")
+        .config("spark.jars.packages", "com.datastax.spark:spark-cassandra-connector_2.12:3.5.0")
+        .config("spark.cassandra.connection.host", "127.0.0.1")
+        .config("spark.cassandra.connection.port", "9042")
+        .config("spark.driver.host", "127.0.0.1")
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.local.dir", TMP_DIR)
+        .config("spark.hadoop.fs.permissions.umask-mode", "000")
+        .master("local[1]")
+        .getOrCreate())
     
-    # Створюємо Spark session з підключенням до 127.0.0.1
-    spark = SparkSession.builder \
-        .appName("CassandraWriteTest") \
-        .config("spark.jars.packages", "com.datastax.spark:spark-cassandra-connector_2.12:3.5.0") \
-        .config("spark.cassandra.connection.host", "127.0.0.1") \
-        .config("spark.cassandra.connection.port", "9042") \
-        .config("spark.sql.extensions", "com.datastax.spark.connector.CassandraSparkExtensions") \
-        .master("local[1]") \
-        .getOrCreate()
+    yield s
+    s.stop()
+    time.sleep(2) # Даємо Windows час закрити файли
+    shutil.rmtree(TMP_DIR, ignore_errors=True)
 
-    # Тестові дані: важливо, щоб id був рядком, який Spark зможе записати в UUID
+def test_cassandra_setup():
+    assert setup_cassandra_schema()
+
+def test_write_to_cassandra(spark):
+    # 1. Працюємо ТІЛЬКИ з рядком
+    test_id_str = str(uuid.uuid4()) 
+    
     test_data = [Row(
-        id=str(uuid.uuid4()), 
-        page_title="Test Wikipedia Page", 
-        user_text="TestUser", 
+        id=test_id_str, 
+        page_title="Windows Test Page", 
+        user_text="tester", 
         dt=datetime.now()
     )]
     
     df = spark.createDataFrame(test_data)
 
     try:
+        # 2. Запис (конектор сам конвертує string -> uuid в Cassandra)
         df.write \
             .format("org.apache.spark.sql.cassandra") \
             .options(table="edits", keyspace="wiki_namespace") \
             .mode("append") \
             .save()
-        success = True
-    except Exception as e:
-        print(f"❌ Помилка запису: {e}")
-        success = False
-    finally:
-        spark.stop()
-
-    assert success, "Запис в Cassandra не вдався!"
-
-def test_read_from_cassandra():
-    assert wait_for_cassandra()
-    
-    spark = SparkSession.builder \
-        .appName("CassandraReadTest") \
-        .config("spark.jars.packages", "com.datastax.spark:spark-cassandra-connector_2.12:3.5.0") \
-        .config("spark.cassandra.connection.host", "127.0.0.1") \
-        .config("spark.cassandra.connection.port", "9042") \
-        .master("local[1]") \
-        .getOrCreate()
-
-    try:
-        df = spark.read \
+        
+        # 3. Читання та Фільтрація (використовуємо ТІЛЬКИ рядок)
+        # Це критично: фільтруємо за рядком, щоб Py4J не впав
+        read_df = spark.read \
             .format("org.apache.spark.sql.cassandra") \
             .options(table="edits", keyspace="wiki_namespace") \
-            .load()
+            .load() \
+            .filter(col("id") == test_id_str) # ТУТ МАЄ БУТИ РЯДОК
         
-        count = df.count()
-        print(f"📊 Знайдено {count} записів")
+        count = read_df.count()
         assert count >= 1
-    finally:
-        spark.stop()
+        print(f"✅ Успіх! Знайдено записів: {count} для ID: {test_id_str}")
+        
+    except Exception as e:
+        # Виводимо повний трейсбек, якщо впаде
+        import traceback
+        print(traceback.format_exc())
+        pytest.fail(f"Помилка: {e}")

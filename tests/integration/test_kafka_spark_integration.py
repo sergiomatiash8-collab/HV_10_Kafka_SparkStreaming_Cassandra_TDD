@@ -4,6 +4,7 @@ import uuid
 import pytest
 import os
 import shutil
+import urllib.request
 from kafka import KafkaProducer
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
@@ -12,96 +13,116 @@ from pyspark.sql.functions import col
 KAFKA_BROKER = '127.0.0.1:9092'
 TOPIC = 'input'
 
+def setup_windows_hadoop():
+    """
+    АВТОМАТИЧНЕ РІШЕННЯ ДЛЯ WINDOWS:
+    Створює локальне середовище Hadoop та завантажує необхідні бінарники (winutils.exe),
+    без яких Spark падає на Windows при роботі з файловою системою.
+    """
+    hadoop_home = os.path.abspath("./hadoop_env").replace("\\", "/")
+    bin_dir = f"{hadoop_home}/bin"
+    os.makedirs(bin_dir, exist_ok=True)
+    os.makedirs(f"{hadoop_home}/tmp", exist_ok=True)
+    
+    # Офіційні бінарники Hadoop 3.3.5 для Windows (підходять для Spark 3.5)
+    winutils_url = "https://raw.githubusercontent.com/cdarlint/winutils/master/hadoop-3.3.5/bin/winutils.exe"
+    hadoop_dll_url = "https://raw.githubusercontent.com/cdarlint/winutils/master/hadoop-3.3.5/bin/hadoop.dll"
+    
+    winutils_path = f"{bin_dir}/winutils.exe"
+    hadoop_dll_path = f"{bin_dir}/hadoop.dll"
+    
+    if not os.path.exists(winutils_path):
+        print("\n[SETUP] Завантаження winutils.exe для Windows...")
+        urllib.request.urlretrieve(winutils_url, winutils_path)
+    if not os.path.exists(hadoop_dll_path):
+        print("[SETUP] Завантаження hadoop.dll для Windows...")
+        urllib.request.urlretrieve(hadoop_dll_url, hadoop_dll_path)
+
+    # Примусово вказуємо Spark використовувати нашу правильну папку
+    os.environ["HADOOP_HOME"] = hadoop_home
+    os.environ["PATH"] += os.pathsep + bin_dir
+    return hadoop_home
+
 @pytest.fixture(scope='module')
 def spark():
-    """
-    Максимально стабільна конфігурація Spark для Windows.
-    """
-    # Створюємо папку в корені проекту
-    tmp_path = os.path.abspath("./spark_tmp").replace("\\", "/")
-    if not os.path.exists(tmp_path):
-        os.makedirs(tmp_path)
-
-    # Додаємо commons-pool2 до пакетів - це часто вирішує помилки аналізу Kafka
+    # 1. Готуємо середовище (завантажить файли при першому запуску)
+    hadoop_dir = setup_windows_hadoop()
+    
     packages = [
         'org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0',
         'org.apache.commons:commons-pool2:2.11.1'
     ]
 
+    # 2. Стартуємо Spark
     s = (SparkSession.builder
-         .appName('KafkaSparkIntegrationTest')
+         .appName('KafkaSparkIntegration_WinFixed')
          .config('spark.jars.packages', ",".join(packages))
          .config('spark.sql.shuffle.partitions', '1')
          .config('spark.driver.host', '127.0.0.1')
          .config('spark.driver.bindAddress', '127.0.0.1')
-         .config("spark.hadoop.fs.permissions.umask-mode", "000")
-         # Вказуємо Spark використовувати нашу локальну папку для всього
-         .config("spark.sql.streaming.checkpointLocation", f"{tmp_path}/checkpoints")
+         # Направляємо всі темпові файли в нашу контрольовану папку
+         .config("spark.local.dir", f"{hadoop_dir}/tmp")
          .master('local[1]')
          .getOrCreate())
     
     s.sparkContext.setLogLevel("ERROR")
     yield s
     s.stop()
-    
-    # Спроба очистити після себе
-    time.sleep(2)
-    shutil.rmtree(tmp_path, ignore_errors=True)
 
 def test_spark_reads_kafka_stream(spark):
-    """
-    Спрощений тест для перевірки самого каналу зв'язку.
-    """
-    test_id = uuid.uuid4().hex[:8]
-    checkpoint_path = os.path.abspath(f"./spark_tmp/cp_{test_id}").replace("\\", "/")
+    test_id = f"test_{uuid.uuid4().hex[:6]}"
     query_name = f"query_{test_id}"
+    
+    # Шлях для чекпоїнтів у нашій стабільній директорії
+    hadoop_dir = os.environ["HADOOP_HOME"]
+    checkpoint_dir = f"file:///{hadoop_dir}/checkpoints/{test_id}"
 
-    # 1. Читаємо "сирі" дані без складної логіки
+    # Читання з Kafka
     raw_df = (spark.readStream
               .format('kafka')
               .option('kafka.bootstrap.servers', KAFKA_BROKER)
               .option('subscribe', TOPIC)
-              .option('startingOffsets', 'earliest')
+              .option('startingOffsets', 'latest')
               .load()
-              .select(col("value").cast("string"))) # Тільки каст у рядок
+              .select(col("value").cast("string")))
 
     query = None
     try:
-        # 2. Запуск
+        # Старт стріму (Тут він раніше падав через файлову систему)
         query = (raw_df.writeStream
                   .outputMode('append')
                   .format('memory')
                   .queryName(query_name)
-                  .option("checkpointLocation", checkpoint_path)
+                  .option("checkpointLocation", checkpoint_dir)
                   .start())
 
-        # Даємо час на розгортання
-        time.sleep(5)
+        print(f"\n[INFO] Stream started. Waiting for warm-up...")
+        time.sleep(10)
 
-        # 3. Відправка повідомлення
+        # Відправка даних
         producer = KafkaProducer(
             bootstrap_servers=[KAFKA_BROKER],
             value_serializer=lambda x: json.dumps(x).encode('utf-8')
         )
-        
-        test_message = {"test_val": test_id}
-        producer.send(TOPIC, value=test_message)
+        producer.send(TOPIC, value={"key": test_id})
         producer.flush()
         producer.close()
+        print(f"[INFO] Sent message with ID: {test_id}")
 
-        # 4. Очікування результату
+        # Перевірка
         found = False
-        print(f"\n[TEST] Looking for {test_id}...")
-        for _ in range(10):
-            time.sleep(2)
-            # Перевіряємо чи є дані в таблиці
-            result = spark.sql(f"SELECT * FROM {query_name}").collect()
-            if any(test_id in str(row) for row in result):
-                found = True
-                print(f"✅ Found data in Spark memory!")
-                break
+        for i in range(15):
+            time.sleep(1)
+            try:
+                result = spark.sql(f"SELECT * FROM {query_name}").collect()
+                if any(test_id in str(row) for row in result):
+                    found = True
+                    print(f"✅ УРА! Spark побачив дані на {i+1} секунді.")
+                    break
+            except Exception as e:
+                continue
         
-        assert found, "Spark не отримав дані з Kafka."
+        assert found, "Потік запущено, але дані з Kafka не дійшли до пам'яті."
 
     finally:
         if query:
