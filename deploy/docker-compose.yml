@@ -52,7 +52,6 @@ services:
     networks:
       - spark-network
 
-  # ✅ НОВИЙ СЕРВІС: Ініціалізація Cassandra Schema
   cassandra-init:
     image: cassandra:4.1
     container_name: cassandra-init

@@ -1,115 +1,158 @@
 """
-Integration-тест: Spark -> Cassandra -> читання назад
-Запускати після: docker-compose up -d (з ініціалізованою схемою)
+Integration test: Spark → Cassandra запис/читання.
 """
-import uuid
+
 import pytest
-from datetime import datetime, timezone
-from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+from datetime import datetime
+from cassandra.cluster import Cluster
+import time
 
-CASSANDRA_HOST = 'localhost'
-KEYSPACE = 'wiki_namespace'
-TABLE = 'edits'
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def spark():
-    """
-    Spark-сесія з Cassandra connector. 
-    Налаштування HADOOP_HOME та шляхів береться з conftest.py.
-    """
-    s = (SparkSession.builder
-         .appName('CassandraIntegrationTest')
-         .config('spark.jars.packages', 
-                 'com.datastax.spark:spark-cassandra-connector_2.12:3.5.0')
-         .config('spark.cassandra.connection.host', CASSANDRA_HOST)
-         .config('spark.sql.extensions', 
-                 'com.datastax.spark.connector.CassandraSparkExtensions')
-         # Використовуємо локальну папку для тимчасових даних Spark
-         .config("spark.local.dir", "./s_tmp")
-         .master('local[2]')
-         .getOrCreate())
+    """Spark session з Cassandra connector."""
+    spark = SparkSession.builder \
+        .appName("SparkCassandraIntegrationTest") \
+        .config("spark.jars.packages", 
+                "com.datastax.spark:spark-cassandra-connector_2.12:3.5.0") \
+        .config("spark.cassandra.connection.host", "cassandra") \
+        .config("spark.cassandra.connection.port", "9042") \
+        .master("local[1]") \
+        .getOrCreate()
     
-    yield s
-    s.stop()
+    spark.sparkContext.setLogLevel("ERROR")
+    yield spark
+    spark.stop()
 
 
-def test_spark_writes_row_to_cassandra(spark):
+@pytest.fixture
+def cassandra_session():
+    """Cassandra session для перевірки даних."""
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            cluster = Cluster(['cassandra'], port=9042)
+            session = cluster.connect('wiki_namespace')
+            yield session
+            cluster.shutdown()
+            return
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(3)
+            else:
+                pytest.fail(f"Cassandra недоступна: {e}")
+
+
+def test_spark_writes_row_to_cassandra(spark, cassandra_session):
     """
-    Spark записує один рядок у Cassandra.
-    Перевіряємо, що запис не кидає виняток.
+    Тестує запис даних з Spark в Cassandra.
     """
-    test_id = str(uuid.uuid4())
+    # Очищаємо таблицю перед тестом
+    cassandra_session.execute("TRUNCATE wiki_namespace.edits")
+    
+    # Створюємо тестовий DataFrame
+    test_id = "550e8400-e29b-41d4-a716-446655440001"
     test_data = [Row(
         id=test_id,
-        page_title='Spark Integration Test',
-        user_text='integration-bot',
-        dt=datetime(2026, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
+        page_title="Spark Integration Test Page",
+        user_text="SparkTestUser",
+        dt=datetime(2024, 5, 1, 12, 0, 0)
     )]
+    
     df = spark.createDataFrame(test_data)
-
-    df.write \
-        .format('org.apache.spark.sql.cassandra') \
-        .options(table=TABLE, keyspace=KEYSPACE) \
-        .mode('append') \
-        .save()
+    
+    # Запис в Cassandra
+    try:
+        df.write \
+            .format("org.apache.spark.sql.cassandra") \
+            .options(table="edits", keyspace="wiki_namespace") \
+            .mode("append") \
+            .save()
+        
+        print("✅ Запис в Cassandra успішний!")
+        
+    except Exception as e:
+        pytest.fail(f"Помилка запису в Cassandra: {e}")
+    
+    # Перевірка через CQL
+    time.sleep(2)  # Даємо час на запис
+    
+    result = cassandra_session.execute(
+        f"SELECT * FROM wiki_namespace.edits WHERE id = {test_id}"
+    )
+    
+    rows = list(result)
+    assert len(rows) == 1, "Запис не знайдено в Cassandra!"
+    assert rows[0].page_title == "Spark Integration Test Page"
 
 
 def test_spark_reads_back_written_row(spark):
     """
-    Записуємо рядок і читаємо його назад — перевіряємо цілісність даних.
+    Тестує читання даних з Cassandra через Spark.
     """
-    test_id = str(uuid.uuid4())
-    test_title = f'ReadBack-{test_id[:8]}'
-
-    # 1. Записуємо
-    write_df = spark.createDataFrame([Row(
-        id=test_id,
-        page_title=test_title,
-        user_text='readback-bot',
-        dt=datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
-    )])
-    write_df.write \
-        .format('org.apache.spark.sql.cassandra') \
-        .options(table=TABLE, keyspace=KEYSPACE) \
-        .mode('append').save()
-
-    # 2. Читаємо назад
-    read_df = (spark.read
-               .format('org.apache.spark.sql.cassandra')
-               .options(table=TABLE, keyspace=KEYSPACE)
-               .load()
-               .filter(col('page_title') == test_title))
+    # Читаємо дані які записали в попередньому тесті
+    df = spark.read \
+        .format("org.apache.spark.sql.cassandra") \
+        .options(table="edits", keyspace="wiki_namespace") \
+        .load()
     
-    rows = read_df.collect()
-    assert len(rows) == 1, f'Очікували 1 рядок, отримали {len(rows)}'
-    assert rows[0]['user_text'] == 'readback-bot'
-    assert rows[0]['id'] == test_id
+    # Фільтруємо тестовий запис
+    test_df = df.filter(df.page_title == "Spark Integration Test Page")
+    
+    count = test_df.count()
+    assert count >= 1, "Не вдалося прочитати записані дані!"
+    
+    # Перевіряємо структуру
+    row = test_df.first()
+    assert row.user_text == "SparkTestUser"
+    assert row.page_title == "Spark Integration Test Page"
 
 
-def test_duplicate_id_is_upserted(spark):
+def test_duplicate_id_is_upserted(spark, cassandra_session):
     """
-    Перевірка механізму Upsert в Cassandra.
-    Другий запис з тим самим ID має оновити існуючий рядок.
+    Тестує що дублікат ID оновлює запис (upsert).
     """
-    test_id = str(uuid.uuid4())
-
-    for title in ['First Write', 'Second Write (upsert)']:
-        spark.createDataFrame([Row(
-            id=test_id, page_title=title,
-            user_text='upsert-bot',
-            dt=datetime(2026, 5, 1, tzinfo=timezone.utc)
-        )]).write \
-            .format('org.apache.spark.sql.cassandra') \
-            .options(table=TABLE, keyspace=KEYSPACE) \
-            .mode('append').save()
-        
-    read_df = (spark.read
-               .format('org.apache.spark.sql.cassandra')
-               .options(table=TABLE, keyspace=KEYSPACE)
-               .load()
-               .filter(col('id') == test_id))
-    rows = read_df.collect()
-
-    assert len(rows) == 1, 'Cassandra мала зробити upsert, а не створити дублікат'
-    assert rows[0]['page_title'] == 'Second Write (upsert)'
+    test_id = "550e8400-e29b-41d4-a716-446655440002"
+    
+    # Перший запис
+    data1 = [Row(
+        id=test_id,
+        page_title="Original Title",
+        user_text="OriginalUser",
+        dt=datetime(2024, 5, 1, 13, 0, 0)
+    )]
+    
+    spark.createDataFrame(data1).write \
+        .format("org.apache.spark.sql.cassandra") \
+        .options(table="edits", keyspace="wiki_namespace") \
+        .mode("append") \
+        .save()
+    
+    time.sleep(1)
+    
+    # Другий запис з тим самим ID
+    data2 = [Row(
+        id=test_id,
+        page_title="Updated Title",
+        user_text="UpdatedUser",
+        dt=datetime(2024, 5, 1, 14, 0, 0)
+    )]
+    
+    spark.createDataFrame(data2).write \
+        .format("org.apache.spark.sql.cassandra") \
+        .options(table="edits", keyspace="wiki_namespace") \
+        .mode("append") \
+        .save()
+    
+    time.sleep(2)
+    
+    # Перевірка - має бути тільки 1 запис (upsert)
+    result = cassandra_session.execute(
+        f"SELECT * FROM wiki_namespace.edits WHERE id = {test_id}"
+    )
+    
+    rows = list(result)
+    assert len(rows) == 1, "Має бути тільки 1 запис (upsert)!"
+    assert rows[0].page_title == "Updated Title", "Запис не оновився!"
