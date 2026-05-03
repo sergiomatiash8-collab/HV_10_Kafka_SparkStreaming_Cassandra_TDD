@@ -93,7 +93,7 @@ success "Kafka готова!"
 log "Waiting for Cassandra to be ready..."
 sleep 20
 
-# Перевірка Cassandra
+
 until docker exec cassandra cqlsh -e "DESCRIBE KEYSPACES" &> /dev/null; do
     log "Cassandra is not ready yet, wait 10 sec..."
     sleep 10
