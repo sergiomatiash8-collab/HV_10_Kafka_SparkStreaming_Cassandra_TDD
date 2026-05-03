@@ -1,6 +1,3 @@
--- Cassandra Schema Initialization
--- Створює keyspace та таблицю для Wikipedia edits
-
 CREATE KEYSPACE IF NOT EXISTS wiki_namespace
 WITH replication = {
     'class': 'SimpleStrategy',
@@ -9,12 +6,14 @@ WITH replication = {
 
 USE wiki_namespace;
 
-CREATE TABLE IF NOT EXISTS edits (
-    id UUID PRIMARY KEY,
-    page_title TEXT,
-    user_text TEXT,
-    dt TIMESTAMP
-);
 
-CREATE INDEX IF NOT EXISTS edits_dt_idx ON edits (dt);
-CREATE INDEX IF NOT EXISTS edits_user_idx ON edits (user_text);
+CREATE TABLE IF NOT EXISTS edits (
+    user_id TEXT,
+    domain TEXT,
+    created_at TIMESTAMP,
+    page_title TEXT,
+    PRIMARY KEY ((user_id), created_at, domain)
+) WITH CLUSTERING ORDER BY (created_at DESC, domain ASC);
+
+CREATE INDEX IF NOT EXISTS edits_domain_idx ON edits (domain);
+CREATE INDEX IF NOT EXISTS edits_page_title_idx ON edits (page_title);

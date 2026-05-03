@@ -5,14 +5,22 @@ import time
 from kafka import KafkaProducer
 from sseclient import SSEClient
 
+from prometheus_client import Counter, Gauge, push_to_gateway, CollectorRegistry
+
 def parse_wikipedia_event(raw_data):
     return json.loads(raw_data)
 
 if __name__ == "__main__":
-    # Динамічно отримуємо адресу Kafka з Docker або використовуємо localhost
     kafka_broker = os.environ.get("KAFKA_BROKER", "localhost:9092")
     
-    print(f"Ініціалізація Kafka Producer (Broker: {kafka_broker})...")
+    pushgateway_url = os.environ.get("PUSHGATEWAY_URL", "pushgateway:9091")
+    
+    # Metrics init
+    registry = CollectorRegistry()
+    messages_sent = Counter('generator_messages_sent', 'Total messages sent', registry=registry)
+    generator_status = Gauge('generator_status', 'Generator health status', registry=registry)
+    
+    generator_status.set(1) 
     
     producer = KafkaProducer(
         bootstrap_servers=[kafka_broker],
@@ -21,32 +29,36 @@ if __name__ == "__main__":
     )
     
     url = "https://stream.wikimedia.org/v2/stream/page-create"
-    headers = {'User-Agent': 'MyDataPipelineProject/1.0 (contact: your_email@example.com)'}
+    headers = {'User-Agent': 'MyDataPipelineProject/1.0'}
+    
+    last_push_time = time.time()
     
     try:
-        print("Підключення до стріму Wikipedia...")
         response = requests.get(url, stream=True, headers=headers, timeout=15)
         messages = SSEClient(response)
-        
-        print("Початок стрімінгу в топік 'input'...")
         
         for msg in messages.events():
             if msg.data:
                 try:
                     data = parse_wikipedia_event(msg.data)
-                    # Відправка даних
                     producer.send('input', value=data)
                     
-                    title = data.get('page_title', 'Unknown Title')
-                    print(f"✅ Sent to Kafka: {title}")
                     
-                except json.JSONDecodeError:
-                    continue
+                    messages_sent.inc()
+                    
+                    # Sending metrics into Pushgetaway every 10 sec
+                    if time.time() - last_push_time > 10:
+                        try:
+                            push_to_gateway(pushgateway_url, job='wikipedia_generator', registry=registry)
+                            last_push_time = time.time()
+                        except Exception as e:
+                            print(f"Metrics push failed: {e}")
+                            
                 except Exception as e:
-                    print(f"❌ Помилка при відправці: {e}")
+                    print(f"Error: {e}")
                     
     except KeyboardInterrupt:
-        print("\nЗупинка генератора...")
+        generator_status.set(0) 
+        push_to_gateway(pushgateway_url, job='wikipedia_generator', registry=registry)
     finally:
         producer.close()
-        print("Kafka Producer закрито.")
