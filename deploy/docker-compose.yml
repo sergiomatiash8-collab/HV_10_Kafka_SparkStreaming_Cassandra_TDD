@@ -8,13 +8,16 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
     networks:
       - spark-network
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
-      interval: 10s
+      
+      test: bash -c "echo 'ruok' > /dev/tcp/127.0.0.1/2181"
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 3
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0

@@ -1,19 +1,14 @@
-CREATE KEYSPACE IF NOT EXISTS wiki_namespace
-WITH replication = {
-    'class': 'SimpleStrategy',
-    'replication_factor': 1
-};
-
 USE wiki_namespace;
 
+DROP TABLE IF EXISTS edits;
 
-CREATE TABLE IF NOT EXISTS edits (
+CREATE TABLE edits (
     user_id TEXT,
     domain TEXT,
-    created_at TIMESTAMP,
     page_title TEXT,
-    PRIMARY KEY ((user_id), created_at, domain)
-) WITH CLUSTERING ORDER BY (created_at DESC, domain ASC);
+    created_at TIMESTAMP,
+    user_is_bot BOOLEAN,
+    PRIMARY KEY (domain, created_at, user_id)
+) WITH CLUSTERING ORDER BY (created_at DESC, user_id ASC);
 
-CREATE INDEX IF NOT EXISTS edits_domain_idx ON edits (domain);
 CREATE INDEX IF NOT EXISTS edits_page_title_idx ON edits (page_title);

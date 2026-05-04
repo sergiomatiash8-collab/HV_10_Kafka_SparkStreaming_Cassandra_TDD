@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ============================================
-# Orchestration Script для Wikipedia Pipeline
-# Start system in correct order
+# Orchestration Script for Wikipedia Pipeline
 # ============================================
 
-set -e  # Stop if error
+set -e 
 
 # Colors for highlighting
 RED='\033[0;31m'
@@ -14,191 +13,119 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Log function custom
-log() {
-    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-    exit 1
-}
-
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+# Logging functions
+log() { echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
 # ============================================
 # Step 1: Check of prerequisites
 # ============================================
+log "Checking system prerequisites..."
+command -v docker &> /dev/null || error "Docker is not installed!"
+command -v docker-compose &> /dev/null || error "Docker Compose is not installed!"
 
-log "System condition check..."
-
-if ! command -v docker &> /dev/null; then
-    error "Docker not set up!"
-fi
-
-if ! command -v docker-compose &> /dev/null; then
-    error "Docker Compose not set up!"
-fi
-
-success "System condition met"
+# Store project root to ensure path stability
+PROJECT_ROOT=$(pwd)
 
 # ============================================
 # Step 2: Cleaning of previous sessions
 # ============================================
-
-log "Previous containers cleaning..."
-
-cd deploy
-docker-compose down -v 2>/dev/null || true
-
-success "Cleaning finalized"
+log "Cleaning previous containers and volumes..."
+cd deploy || error "Directory 'deploy' not found!"
+docker-compose down -v --remove-orphans 2>/dev/null || true
+success "Cleanup finalized"
 
 # ============================================
 # Step 3: Image building
 # ============================================
-
-log "Docker image building..."
-
+log "Building Docker images..."
 docker-compose build --no-cache
-
-success "Images built"
+success "Images built successfully"
 
 # ============================================
 # Step 4: Infrastructure start
 # ============================================
-
-log "Infrastrucure start (Zookeeper, Kafka, Cassandra)..."
-
+log "Starting infrastructure (Zookeeper, Kafka, Cassandra)..."
 docker-compose up -d zookeeper kafka cassandra
 
-
 log "Waiting for Kafka to be ready..."
-sleep 15
-
-
+sleep 10
 until docker exec kafka kafka-broker-api-versions --bootstrap-server localhost:9092 &> /dev/null; do
-    log "Kafka is not ready yet, wait 5 sec..."
+    log "Kafka is not ready yet, waiting 5 sec..."
     sleep 5
 done
+success "Kafka is ready!"
 
-success "Kafka готова!"
-
-
-log "Waiting for Cassandra to be ready..."
-sleep 20
-
-
+log "Waiting for Cassandra to be ready (this may take up to 60s)..."
 until docker exec cassandra cqlsh -e "DESCRIBE KEYSPACES" &> /dev/null; do
-    log "Cassandra is not ready yet, wait 10 sec..."
+    log "Cassandra is still booting, waiting 10 sec..."
     sleep 10
 done
-
 success "Cassandra is ready!"
 
 # ============================================
 # Step 5: Initialization Cassandra Schema
 # ============================================
+log "Initializing Cassandra schema..."
+docker-compose run --rm cassandra-init
+success "Schema created successfully!"
 
-log "Initialization Cassandra schema..."
-
-docker-compose up cassandra-init
-
-success "Schema created!"
-
-
-log "Check created schema..."
-
-docker exec cassandra cqlsh -e "DESCRIBE KEYSPACE wiki_namespace" > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
+# Check keyspace existence
+if docker exec cassandra cqlsh -e "DESCRIBE KEYSPACE wiki_namespace" > /dev/null 2>&1; then
     success "Keyspace 'wiki_namespace' confirmed!"
 else
-    error "Keyspace not created!"
+    error "Keyspace was not created!"
 fi
 
 # ============================================
-# Step 6: Start  Generator
+# Step 6 & 7: Start Pipeline Components
 # ============================================
+log "Starting Wikipedia Stream Generator and Spark Processor..."
+docker-compose up -d generator spark-processor
 
-log "Start Wikipedia Stream Generator..."
-
-docker-compose up -d generator
-
-sleep 5
-
-
-log "Check generator logs..."
-docker-compose logs generator | tail -n 5
-
-success "Generator started!"
-
-# ============================================
-# Step 7: Start Spark Processor
-# ============================================
-
-log "Start Spark Streaming Processor..."
-
-docker-compose up -d spark-processor
-
-sleep 10
-
-
-log "Check log processor..."
-docker-compose logs spark-processor | tail -n 10
-
-success "Spark Processor started!"
+log "Waiting 20 sec for data processing to initialize..."
+sleep 20
 
 # ============================================
 # Step 8: System status
 # ============================================
-
-log "Containers current status:"
+log "Current container status:"
 docker-compose ps
 
 # ============================================
 # Step 9: Data check
 # ============================================
+log "Checking for ingested data in Cassandra..."
 
-log "Waiting for 30 sec for data to be collected..."
-sleep 30
-
-log "Check data in Cassandra..."
-
-RECORD_COUNT=$(docker exec cassandra cqlsh -e "SELECT COUNT(*) FROM wiki_namespace.edits;" | grep -oP '\d+' | tail -1)
+# Extracting record count from CQL output
+RECORD_COUNT=$(docker exec cassandra cqlsh -e "SELECT count(*) FROM wiki_namespace.edits;" | grep -E -o '[0-9]+' | head -n 1 || echo "0")
 
 if [ "$RECORD_COUNT" -gt 0 ]; then
-    success "In Cassandra found $RECORD_COUNT records!"
+    success "Found $RECORD_COUNT records in Cassandra!"
 else
-    warn "In Cassandra still no records, perhaps need to wait..."
+    warn "No records found yet. Spark might still be processing the first micro-batch."
 fi
 
 # ============================================
-# Step 10: User instruction
+# Step 10: Final Instructions
 # ============================================
+cd "$PROJECT_ROOT"
 
 echo ""
-echo "=========================================="
-echo -e "${GREEN}System set up successfully!${NC}"
-echo "=========================================="
+echo -e "${GREEN}==========================================${NC}"
+echo -e "${GREEN}   SYSTEM SET UP SUCCESSFULLY!            ${NC}"
+echo -e "${GREEN}==========================================${NC}"
 echo ""
 echo "Monitoring:"
-echo "   Logs Generator:  docker-compose logs -f generator"
-echo "   Logs Processor:  docker-compose logs -f spark-processor"
-echo "   All logs:        docker-compose logs -f"
+echo "   Generator Logs:  docker-compose -f deploy/docker-compose.yml logs -f generator"
+echo "   Processor Logs:  docker-compose -f deploy/docker-compose.yml logs -f spark-processor"
 echo ""
 echo "Data check:"
-echo "   Cassandra CLI:   docker exec -it cassandra cqlsh"
-echo "   Query:           SELECT * FROM wiki_namespace.edits LIMIT 10;"
+echo "   Query: docker exec -it cassandra cqlsh -e \"SELECT * FROM wiki_namespace.edits LIMIT 10;\""
 echo ""
-echo "Stop:"
-echo "   ./scripts/stop_pipeline.sh"
+echo "Stop Pipeline:"
+echo "   docker-compose -f deploy/docker-compose.yml down"
 echo ""
 echo "=========================================="
-
-cd ..

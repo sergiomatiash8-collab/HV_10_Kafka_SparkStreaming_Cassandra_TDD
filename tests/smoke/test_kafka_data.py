@@ -3,8 +3,6 @@ import json
 import time
 
 def test_kafka_has_data():
-   
-    
     
     consumer = KafkaConsumer(
         'input',
@@ -12,19 +10,27 @@ def test_kafka_has_data():
         auto_offset_reset='earliest',
         enable_auto_commit=False,
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-        consumer_timeout_ms=10000  
+        consumer_timeout_ms=5000  
     )
     
     print("\n[TEST] Searching for messages in 'input'...")
     
+    found_msg = None
+    start_time = time.time()
     
-    msg = next(consumer, None)
+    # Спробуємо отримати повідомлення протягом 10 секунд
+    while time.time() - start_time < 10:
+        found_msg = next(consumer, None)
+        if found_msg:
+            break
+        time.sleep(1)
     
-    if msg:
-        print(f"[TEST] Success! Found message with title: {msg.value.get('page_title')}")
+    try:
+        if found_msg:
+            print(f"[TEST] Success! Found message with title: {found_msg.value.get('page_title')}")
     
-   
-    assert msg is not None, "Topic 'input' is empty or unreachable!"
-    assert 'page_title' in msg.value, "Field 'page_title' missing in message!"
-    
-    consumer.close()
+        assert found_msg is not None, "Topic 'input' is empty or unreachable!"
+        assert 'page_title' in found_msg.value, "Field 'page_title' missing in message!"
+        
+    finally:
+        consumer.close()

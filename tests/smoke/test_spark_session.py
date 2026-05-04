@@ -12,7 +12,7 @@ def test_spark_kafka_packages_load(spark):
         
         df = spark.readStream \
             .format("kafka") \
-            .option("kafka.bootstrap.servers", "localhost:9092") \
+            .option("kafka.bootstrap.servers", "127.0.0.1:9092") \
             .option("subscribe", "input") \
             .load()
         
@@ -22,4 +22,3 @@ def test_spark_kafka_packages_load(spark):
     except Exception as e:
         
         pytest.fail(f"Spark was unable to initialise the Kafka stream due to a global session: {e}")
-

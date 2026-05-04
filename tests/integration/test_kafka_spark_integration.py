@@ -1,8 +1,8 @@
 """Integration test: Kafka → Spark (batch read)."""
 import pytest
 
-
-KAFKA_BROKER = 'localhost:9092'
+# Using 127.0.0.1 for stability on Windows
+KAFKA_BROKER = '127.0.0.1:9092'
 TOPIC = 'input' 
 
 def test_spark_reads_kafka_stream(spark):
@@ -21,10 +21,10 @@ def test_spark_reads_kafka_stream(spark):
         assert df is not None
         expected = ['key', 'value', 'topic', 'partition', 'offset', 'timestamp']
         for col in expected:
-            assert col in df.columns, f'Col abscent: {col}'
+            assert col in df.columns, f'Col absent: {col}'
             
         count = df.count()
-        print(f'Found {count} masseges in topic {TOPIC}')
+        print(f'\nFound {count} messages in topic {TOPIC}')
         assert count >= 0
         
     except Exception as e:
