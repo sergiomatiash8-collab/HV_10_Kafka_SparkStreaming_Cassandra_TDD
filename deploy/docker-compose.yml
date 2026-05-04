@@ -1,4 +1,7 @@
+version: '3.8'
+
 services:
+  # ============= KAFKA INFRASTRUCTURE =============
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -7,6 +10,11 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     networks:
       - spark-network
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -14,7 +22,8 @@ services:
     ports:
       - "9092:9092"
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -22,6 +31,10 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      # Метрики для Prometheus
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: kafka
     healthcheck:
       test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
       interval: 10s
@@ -30,11 +43,13 @@ services:
     networks:
       - spark-network
 
+  # ============= CASSANDRA DATABASE =============
   cassandra:
     image: cassandra:4.1
     container_name: cassandra
     ports:
       - "9042:9042"
+      - "7199:7199"  # JMX для моніторингу
     environment:
       - CASSANDRA_CLUSTER_NAME=WikiCluster
       - CASSANDRA_DC=dc1
@@ -65,6 +80,7 @@ services:
     networks:
       - spark-network
 
+  # ============= DATA GENERATOR =============
   generator:
     build:
       context: ..
@@ -74,26 +90,50 @@ services:
     restart: always
     environment:
       - KAFKA_BROKER=kafka:29092
+      - PUSHGATEWAY_URL=pushgateway:9091
     depends_on:
       kafka:
         condition: service_healthy
     networks:
       - spark-network
 
-  spark-processor:
+  # ============= SPARK JOBS =============
+  # Job 1: Фільтрація (input -> processed)
+  spark-filter:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: spark-processor
+    container_name: spark-filter
+    command: >
+      spark-submit 
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+      /app/src/spark/filter_job.py
+    restart: always
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - PUSHGATEWAY_URL=pushgateway:9091
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - spark-network
+
+  # Job 2: Запис в Cassandra (processed -> Cassandra)
+  spark-cassandra:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: spark-cassandra
     command: >
       spark-submit 
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,com.datastax.spark:spark-cassandra-connector_2.12:3.5.0
       --conf spark.cassandra.connection.host=cassandra
       --conf spark.cassandra.connection.port=9042
-      /app/src/spark/processor.py
+      /app/src/spark/cassandra_writer_job.py
     restart: always
     environment:
       - KAFKA_BROKER=kafka:29092
+      - PUSHGATEWAY_URL=pushgateway:9091
     depends_on:
       kafka:
         condition: service_healthy
@@ -102,38 +142,77 @@ services:
     networks:
       - spark-network
 
+  # ============= MONITORING STACK =============
+  # Pushgateway для push-based метрик від Spark та Generator
+  pushgateway:
+    image: prom/pushgateway:v1.6.2
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - spark-network
+    restart: unless-stopped
+
+  # Prometheus - збір та зберігання метрик
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - spark-network
+    restart: unless-stopped
+    depends_on:
+      - pushgateway
+
+  # Grafana - візуалізація метрик
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - spark-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # Kafka Exporter для метрик Kafka
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    command:
+      - '--kafka.server=kafka:29092'
+    ports:
+      - "9308:9308"
+    networks:
+      - spark-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   cassandra_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   spark-network:
     driver: bridge
-
-# Spark Job 1 - Filter
-  spark-filter:
-    command: spark-submit /app/src/spark/filter_job.py
-
-  # Spark Job 2 - Cassandra Writer
-  spark-cassandra:
-    command: spark-submit /app/src/spark/cassandra_writer_job.py
-
-  # Monitoring
-  pushgateway:
-    image: prom/pushgateway:v1.6.2
-    ports: ["9091:9091"]
-
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    ports: ["9090:9090"]
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-
-  grafana:
-    image: grafana/grafana:10.2.2
-    ports: ["3000:3000"]
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-
-  kafka-exporter:
-    image: danielqsj/kafka-exporter:v1.7.0
-    ports: ["9308:9308"]

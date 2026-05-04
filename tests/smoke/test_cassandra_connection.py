@@ -1,14 +1,10 @@
-"""
-Smoke test: Перевірка базового підключення до Cassandra через Spark.
-"""
-
 import pytest
 from pyspark.sql import SparkSession
 
 
 def test_spark_cassandra_connection():
     """
-    Перевіряє чи Spark може створити session з Cassandra connector.
+    Checks whether Spark can establish a session with the Cassandra connector
     """
     spark = SparkSession.builder \
         .appName("CassandraConnectionTest") \
@@ -25,7 +21,7 @@ def test_spark_cassandra_connection():
 
 def test_cassandra_connector_version():
     """
-    Перевіряє що Spark версія сумісна з connector.
+    Checks that the Spark version is compatible with the connector.
     """
     spark = SparkSession.builder \
         .appName("VersionTest") \

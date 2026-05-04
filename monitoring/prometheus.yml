@@ -1,8 +1,40 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'wikipedia-pipeline'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# Load rules (optional)
+# rule_files:
+#   - "alerts.yml"
+
 scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # Pushgateway for metrics from Spark та Generator
   - job_name: 'pushgateway'
+    honor_labels: true
     static_configs:
       - targets: ['pushgateway:9091']
+        labels:
+          service: 'pushgateway'
 
+  # Kafka metrics trought Kafka Exporter
   - job_name: 'kafka'
     static_configs:
       - targets: ['kafka-exporter:9308']
+        labels:
+          service: 'kafka'
+          component: 'broker'
