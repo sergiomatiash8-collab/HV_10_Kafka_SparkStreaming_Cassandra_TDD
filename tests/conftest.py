@@ -5,7 +5,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 def pytest_configure(config):
-    """Глобальне налаштування оточення."""
+    
     hadoop_home = PROJECT_ROOT / 'hadoop'
     winutils = hadoop_home / 'bin' / 'winutils.exe'
     if winutils.exists():
@@ -21,7 +21,7 @@ def pytest_configure(config):
 
 @pytest.fixture(scope='session', autouse=True)
 def spark_cleanup_manager():
-    """Очищує тимчасові папки Spark до і після тестів."""
+    
     temp_folders = [
         PROJECT_ROOT / 'spark_workspace',
         PROJECT_ROOT / 's_tmp',
@@ -37,17 +37,14 @@ def spark_cleanup_manager():
 
 @pytest.fixture(scope='session')
 def spark():
-    """
-    Єдина сесія Spark для всіх інтеграційних тестів.
-    Завантажує пакети Kafka та Cassandra одночасно.
-    """
+    
     from pyspark.sql import SparkSession
     
-    # Вбиваємо старі процеси Java перед стартом (тільки для Windows)
+    
     if os.name == 'nt':
         os.system("taskkill /F /IM java.exe >nul 2>&1")
 
-    # Об'єднуємо пакети в один рядок через кому
+    
     packages = [
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0",
         "com.datastax.spark:spark-cassandra-connector_2.12:3.5.0"
@@ -56,7 +53,6 @@ def spark():
     session = (SparkSession.builder
               .appName("TDD_Integration_Session")
               .config("spark.jars.packages", ",".join(packages))
-              # Налаштування для Cassandra
               .config("spark.sql.extensions", "com.datastax.spark.connector.CassandraSparkExtensions")
               .config("spark.cassandra.connection.host", "localhost")
               .config("spark.driver.host", "127.0.0.1")

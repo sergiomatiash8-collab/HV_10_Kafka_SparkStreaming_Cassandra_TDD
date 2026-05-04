@@ -1,9 +1,3 @@
-#!/bin/bash
-
-# ============================================
-# Test Runner Script
-# Запускає тести в правильному порядку (TDD)
-# ============================================
 
 set -e
 
@@ -25,10 +19,10 @@ error() {
 }
 
 # ============================================
-# UNIT TESTS (швидкі, без Docker)
+# UNIT TESTS (speedy, w/o Docker)
 # ============================================
 
-log "Запуск Unit Tests..."
+log "Start Unit Tests..."
 
 pytest tests/unit/ -v --tb=short
 
@@ -40,20 +34,20 @@ else
 fi
 
 # ============================================
-# SMOKE TESTS (потребують Docker)
+# SMOKE TESTS (need Docker)
 # ============================================
 
-log "Перевірка чи запущені Docker контейнери..."
+log "Checking whether Docker containers are running..."
 
 cd deploy
 
 if ! docker-compose ps | grep -q "Up"; then
-    log "Контейнери не запущені, запускаємо..."
+    log "The containers haven't started yet; let's start them..."
     ./scripts/run_pipeline.sh
     sleep 30
 fi
 
-log "Запуск Smoke Tests..."
+log "Start Smoke Tests..."
 
 docker-compose exec -T spark-processor pytest tests/smoke/ -v --tb=short
 
@@ -66,4 +60,4 @@ fi
 
 cd ..
 
-success "ВСІ ТЕСТИ ПРОЙШЛИ! 🎉"
+success "ALL TESTS HAVE BEEN PASSED! "

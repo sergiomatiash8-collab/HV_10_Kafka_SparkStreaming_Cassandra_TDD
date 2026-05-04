@@ -1,8 +1,3 @@
-#!/bin/bash
-
-# ============================================
-# Stop Script для Wikipedia Pipeline
-# ============================================
 
 set -e
 
@@ -19,19 +14,19 @@ success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
-log "🛑 Зупинка Wikipedia Pipeline..."
+log "Stop Wikipedia Pipeline..."
 
 cd deploy
 
-# Показуємо статистику перед зупинкою
-log "📊 Фінальна статистика даних:"
+
+log "Final data statistics:"
 docker exec cassandra cqlsh -e "SELECT COUNT(*) FROM wiki_namespace.edits;" 2>/dev/null || true
 
-# Зупинка контейнерів
+
 docker-compose down
 
-success "Всі контейнери зупинені!"
+success "All containers have been stopped!"
 
-log "💾 Volumes збережені. Для повного очищення: docker-compose down -v"
+log "The volumes have been saved. To completely clear them: docker-compose down -v"
 
 cd ..

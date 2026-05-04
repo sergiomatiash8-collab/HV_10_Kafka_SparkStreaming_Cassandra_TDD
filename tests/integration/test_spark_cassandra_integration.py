@@ -6,7 +6,7 @@ from cassandra.cluster import Cluster
 from cassandra.policies import RoundRobinPolicy
 import time
 
-# Константи
+
 CASSANDRA_HOST = 'localhost'
 CASSANDRA_PORT = 9042
 KEYSPACE = 'wiki_namespace'
@@ -14,7 +14,7 @@ TABLE = 'edits'
 
 @pytest.fixture(scope='module')
 def cql():
-    """cassandra-driver session — надійний запис без Spark worker crash."""
+    
     for attempt in range(10):
         try:
             cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT,
@@ -29,12 +29,12 @@ def cql():
             else:
                 pytest.fail(f'Cassandra {CASSANDRA_HOST}:{CASSANDRA_PORT} недоступна: {e}')
 
-# ID для тестів
+
 TEST_ID_1 = uuid.UUID('550e8400-e29b-41d4-a716-446655440001')
 TEST_ID_2 = uuid.UUID('550e8400-e29b-41d4-a716-446655440002')
 
 def test_spark_writes_row_to_cassandra(cql):
-    """Записує через cassandra-driver і читає назад."""
+    
     cql.execute('TRUNCATE wiki_namespace.edits')
     cql.execute(
         'INSERT INTO wiki_namespace.edits (id, page_title, user_text, dt)'
@@ -49,10 +49,7 @@ def test_spark_writes_row_to_cassandra(cql):
     assert rows[0].page_title == 'Spark Integration Test Page'
 
 def test_spark_reads_back_written_row(spark, cql):
-    """
-    Spark ЧИТАЄ дані через connector.
-    Використовує глобальну сесію 'spark' з conftest.py.
-    """
+    
     from pyspark.sql.functions import col
     df = (
         spark.read
@@ -62,11 +59,11 @@ def test_spark_reads_back_written_row(spark, cql):
         .filter(col('page_title') == 'Spark Integration Test Page')
     )
     rows = df.collect()
-    assert len(rows) >= 1, 'Spark не знайшов записаний рядок!'
+    assert len(rows) >= 1, 'Spark could not find the row written!'
     assert rows[0]['user_text'] == 'SparkTestUser'
 
 def test_duplicate_id_is_upserted(cql):
-    """Cassandra PRIMARY KEY = UUID → дублікат робить upsert."""
+    
     for title, user in [('Original Title', 'OriginalUser'),
                         ('Updated Title',  'UpdatedUser')]:
         cql.execute(

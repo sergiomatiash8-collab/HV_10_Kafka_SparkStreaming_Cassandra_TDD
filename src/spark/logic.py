@@ -1,10 +1,7 @@
 # import json
 # 
 # def transform_wikipedia_event(raw_json):
-#     """
-#     Трансформує сирий JSON з Wikipedia API у пласку структуру.
-#     Повертає словник або None, якщо JSON некоректний.
-#     """
+#
 #     try:
 #         data = json.loads(raw_json)
 #         
